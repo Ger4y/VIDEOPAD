@@ -1,0 +1,8 @@
+{
+  "name": "MadPad Clone",
+  "description": "A video sampler and beat pad application. Record short clips and play them back like a musical instrument.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
