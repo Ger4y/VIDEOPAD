@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { findBeatOnset } from '../services/audio';
 import { RecorderProps } from '../types';
-import { Loader2, Video, X, Check, SwitchCamera } from 'lucide-react';
+import { Loader2, Video, X, SwitchCamera, Zap, ZapOff } from 'lucide-react';
 
 export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCancel }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -12,8 +12,10 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
   const [isProcessing, setIsProcessing] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
-  // Default to front camera ('user')
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  
+  // Screen Light state: Default to TRUE to illuminate face as requested
+  const [screenLight, setScreenLight] = useState(true);
 
   useEffect(() => {
     let localStream: MediaStream | null = null;
@@ -129,9 +131,31 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
     setFacingMode(prev => prev === 'environment' ? 'user' : 'environment');
   };
 
+  // UI Theme Helpers
+  const bgClass = screenLight ? 'bg-white' : 'bg-black';
+  const textClass = screenLight ? 'text-gray-500' : 'text-gray-400';
+  const buttonSecondaryClass = screenLight 
+    ? 'bg-gray-100 text-gray-900 hover:bg-gray-200' 
+    : 'bg-gray-800 text-white hover:bg-gray-700';
+
   return (
-    <div className="fixed inset-0 z-50 bg-black flex flex-col items-center justify-center">
-      <div className="relative w-full max-w-md aspect-square bg-gray-900 overflow-hidden rounded-lg shadow-2xl border border-gray-700">
+    <div className={`fixed inset-0 z-50 flex flex-col items-center justify-center transition-colors duration-300 ${bgClass}`}>
+      
+      {/* Screen Light Toggle */}
+      <button 
+        onClick={() => setScreenLight(!screenLight)}
+        className={`absolute top-4 right-4 p-3 rounded-full transition-all ${buttonSecondaryClass}`}
+        aria-label="Toggle Screen Light"
+      >
+        {screenLight ? <Zap className="w-6 h-6 fill-current" /> : <ZapOff className="w-6 h-6" />}
+      </button>
+
+      {/* Viewfinder */}
+      <div className={`
+        relative w-full max-w-md aspect-square overflow-hidden rounded-lg shadow-2xl 
+        border transition-colors duration-300
+        ${screenLight ? 'border-gray-200 bg-black' : 'border-gray-700 bg-black'}
+      `}>
         <video 
           ref={videoRef} 
           autoPlay 
@@ -154,12 +178,13 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
         )}
       </div>
 
+      {/* Controls */}
       <div className="mt-8 flex items-center gap-8">
         {!isRecording ? (
           <>
             <button 
               onClick={onCancel}
-              className="p-4 rounded-full bg-gray-800 text-white hover:bg-gray-700 transition-colors"
+              className={`p-4 rounded-full transition-colors ${buttonSecondaryClass}`}
             >
               <X className="w-8 h-8" />
             </button>
@@ -172,7 +197,7 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
             </button>
             <button 
               onClick={toggleCamera}
-              className="p-4 rounded-full bg-gray-800 text-white hover:bg-gray-700 transition-colors"
+              className={`p-4 rounded-full transition-colors ${buttonSecondaryClass}`}
             >
               <SwitchCamera className="w-8 h-8" />
             </button>
@@ -187,7 +212,7 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
         )}
       </div>
       
-      <p className="mt-6 text-gray-400 text-sm">
+      <p className={`mt-6 text-sm transition-colors duration-300 ${textClass}`}>
         {isRecording ? "Tap to stop & save" : "Tap red button to record"}
       </p>
     </div>
