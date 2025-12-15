@@ -33,6 +33,7 @@ export const GridCell: React.FC<GridCellProps> = ({
   }, [cell.volume, hasAudioBuffer]);
 
   // Robustness: ensure video seeks to start time immediately when loaded
+  // This prevents the "black box" syndrome if the video starts in darkness or isn't seeked yet
   const handleMetadataLoaded = () => {
     if (videoRef.current) {
       videoRef.current.currentTime = cell.startTime;
