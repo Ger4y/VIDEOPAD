@@ -205,7 +205,7 @@ export default function App() {
               alt="Logo" 
               className="w-full h-full object-cover"
               onError={(e) => {
-                // Fallback if logo.png is missing
+                // Fallback if logo.png is missing or not in public folder yet
                 e.currentTarget.style.display = 'none';
                 e.currentTarget.parentElement!.classList.add('bg-gradient-to-tr', 'from-pink-500', 'to-purple-600');
               }}
