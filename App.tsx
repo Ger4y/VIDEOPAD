@@ -20,7 +20,6 @@ export default function App() {
   const [showInfo, setShowInfo] = useState(false);
   const [infoLang, setInfoLang] = useState<'es' | 'en'>('es');
   
-  // Estados para exportación y borrado
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -51,6 +50,9 @@ export default function App() {
   }, []);
 
   const loadData = useCallback(async () => {
+    // Si ya estamos en una acción de proyecto, evitamos recargas que puedan limpiar URLs activas
+    if (isProjectAction && cells.length > 0) return;
+
     if (cells.length === 0) setIsLoading(true);
     try {
       const storedClips = await getAllClips();
@@ -88,7 +90,7 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [cells.length]);
+  }, [cells.length, isProjectAction]);
 
   useEffect(() => {
     loadData();
@@ -177,13 +179,17 @@ export default function App() {
     const clip = await getClip(id);
     if (clip) {
       setActiveCellId(id);
+      // Forzamos que sea un Blob válido por si acaso se corrompió el tipo MIME
+      const robustBlob = new Blob([clip.blob], { type: clip.blob.type || 'video/mp4' });
       setPendingClip({
-        blob: clip.blob,
+        blob: robustBlob,
         startTime: clip.startTime,
         endTime: clip.endTime,
         transform: clip.transform || DEFAULT_TRANSFORM,
         allowOverlap: clip.allowOverlap
       });
+    } else {
+      alert("No se pudo encontrar el clip en la base de datos.");
     }
   }, []);
 
@@ -220,6 +226,8 @@ export default function App() {
         await deleteClip(clip.id);
       }
       cleanupUrls();
+      // Forzamos reseteo manual del estado antes de loadData
+      setCells([]);
       await loadData();
       setIsConfirmingClear(false);
       setActionMessage("¡Proyecto vaciado!");
@@ -265,11 +273,15 @@ export default function App() {
     setActionMessage("Importando archivos...");
     try {
       const name = await importProject(file);
+      // Limpiamos todo rastro de URLs antiguas antes de recargar
+      cleanupUrls();
+      setCells([]);
       await loadData();
       setActionMessage(`¡Proyecto "${name}" cargado!`);
       setTimeout(() => setActionMessage(null), 2000);
     } catch (e: any) {
-      alert(e.message);
+      console.error(e);
+      alert("Error al importar: " + e.message);
       setActionMessage(null);
     } finally {
       setIsProjectAction(false);
@@ -292,7 +304,7 @@ export default function App() {
       editMode: "Modo Edición",
       editModeDesc: "Activa los ajustes individuales de cada pad (volumen, recorte, etc).",
       saveLoad: "Guardar/Cargar",
-      saveLoadDesc: "Exporta o importa tu sesión completa en un archivo .madpad (formato ZIP robusto).",
+      saveLoadDesc: "Exporta o importa tu sesión completa en un archivo .madpad.zip (formato ZIP robusto).",
       cellActions: "Acciones de Celda",
       record: "GRABAR",
       recordDesc: "Graba un clip instantáneo. Se inserta directamente al terminar.",
@@ -318,7 +330,7 @@ export default function App() {
       editMode: "Edit Mode",
       editModeDesc: "Enables individual settings for each pad (volume, trim, etc).",
       saveLoad: "Save/Load",
-      saveLoadDesc: "Export or import your complete session in a .madpad file (robust ZIP format).",
+      saveLoadDesc: "Export or import your complete session in a .madpad.zip file (robust ZIP format).",
       cellActions: "Cell Actions",
       record: "RECORD",
       recordDesc: "Record an instant clip. It inserts directly when finished.",
@@ -346,7 +358,7 @@ export default function App() {
         const f = e.target.files?.[0];
         if (f) await handleImport(f);
         if (fileInputRef.current) fileInputRef.current.value = '';
-      }} accept=".madpad,.zip" className="hidden" />
+      }} accept=".zip,.madpad,.madpad.zip" className="hidden" />
       
       <input type="file" ref={importFileInputRef} onChange={(e) => {
         const file = e.target.files?.[0];
@@ -439,7 +451,7 @@ export default function App() {
                 <Save className="w-8 h-8 text-pink-500" />
               </div>
               <h2 className="text-xl font-black uppercase tracking-tight">Exportar Proyecto</h2>
-              <p className="text-xs text-gray-500 font-bold uppercase tracking-widest">Elige un nombre para tu archivo .madpad</p>
+              <p className="text-xs text-gray-500 font-bold uppercase tracking-widest">Elige un nombre para tu archivo .madpad.zip</p>
             </div>
             
             <div className="space-y-4">
