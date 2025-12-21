@@ -7,7 +7,10 @@ interface MadPadDB extends DBSchema {
       id: number;
       blob: Blob;
       startTime: number;
-      volume?: number; // Optional for backward compatibility
+      endTime: number;
+      volume?: number;
+      transform?: { scale: number; x: number; y: number };
+      allowOverlap?: boolean; // Added
     };
   };
 }
@@ -25,17 +28,33 @@ export const initDB = async (): Promise<IDBPDatabase<MadPadDB>> => {
   });
 };
 
-export const saveClip = async (id: number, blob: Blob, startTime: number, volume: number = 1.0) => {
+export const saveClip = async (
+  id: number, 
+  blob: Blob, 
+  startTime: number, 
+  endTime: number, 
+  volume: number = 1.0,
+  transform = { scale: 1, x: 0, y: 0 },
+  allowOverlap: boolean = false
+) => {
   const db = await initDB();
-  await db.put(STORE_NAME, { id, blob, startTime, volume });
+  await db.put(STORE_NAME, { id, blob, startTime, endTime, volume, transform, allowOverlap });
 };
 
-// Updates only the volume without needing to re-save the blob
 export const updateClipVolume = async (id: number, volume: number) => {
   const db = await initDB();
   const clip = await db.get(STORE_NAME, id);
   if (clip) {
     clip.volume = volume;
+    await db.put(STORE_NAME, clip);
+  }
+};
+
+export const updateClipOverlap = async (id: number, allowOverlap: boolean) => {
+  const db = await initDB();
+  const clip = await db.get(STORE_NAME, id);
+  if (clip) {
+    clip.allowOverlap = allowOverlap;
     await db.put(STORE_NAME, clip);
   }
 };
