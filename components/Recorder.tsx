@@ -21,8 +21,8 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
         const ms = await navigator.mediaDevices.getUserMedia({
           video: { 
             facingMode: facingMode,
-            width: { ideal: 480 },
-            height: { ideal: 480 },
+            width: { ideal: 720 },
+            height: { ideal: 720 },
             frameRate: { ideal: 30 }
           },
           audio: {
@@ -59,22 +59,22 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
       if (count === 0) {
         clearInterval(timer);
         setCountdown(null);
-        startCapture();
+        // Pequeño retardo visual para que el "1" desaparezca antes de empezar
+        setTimeout(() => startCapture(), 100);
       } else {
         setCountdown(count);
       }
-    }, 600);
+    }, 800);
   };
 
   const startCapture = () => {
     if (!stream) return;
     
     const options: MediaRecorderOptions = {
-      videoBitsPerSecond: 1000000,
+      videoBitsPerSecond: 2500000,
       audioBitsPerSecond: 128000,
     };
 
-    // Priorizar MP4 en dispositivos Apple (iPad/iPhone) para evitar errores de enlace
     const isApple = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     
     if (isApple && MediaRecorder.isTypeSupported('video/mp4')) {
@@ -95,7 +95,6 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
       mediaRecorder.onstop = async () => {
         setIsProcessing(true);
         const blob = new Blob(chunksRef.current, { type: options.mimeType || 'video/webm' });
-        setIsProcessing(false);
         onRecordingComplete(blob, 0);
       };
       mediaRecorder.start();
@@ -134,7 +133,7 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
         <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full object-cover transition-transform duration-300 ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`} />
         {countdown !== null && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-            <span className="text-9xl font-black text-white animate-bounce">{countdown}</span>
+            <span className="text-9xl font-black text-white animate-pulse">{countdown}</span>
           </div>
         )}
         {isProcessing && (
