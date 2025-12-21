@@ -1,198 +1,221 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { PadCell } from '../types';
-import { Trash2, Plus, Volume2, VolumeX } from 'lucide-react';
-import { getAudioContext } from '../services/audio';
+import { Trash2, Volume2, VolumeX, Video, Upload, Scissors, Layers, Volume1 } from 'lucide-react';
+import { getAudioContext, connectToMaster } from '../services/audio';
 
 interface GridCellProps {
   cell: PadCell;
   isDeleteMode: boolean;
   onRecord: (id: number) => void;
+  onImport: (id: number) => void;
+  onTrim: (id: number) => void;
   onDelete: (id: number) => void;
   onVolumeChange: (id: number, volume: number) => void;
+  onToggleOverlap: (id: number, allowOverlap: boolean) => void;
 }
 
 export const GridCell: React.FC<GridCellProps> = ({ 
   cell, 
   isDeleteMode, 
   onRecord, 
+  onImport,
+  onTrim,
   onDelete,
-  onVolumeChange 
+  onVolumeChange,
+  onToggleOverlap
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const playTimerRef = useRef<number | null>(null);
+  const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
   
-  // Determine if we have optimized audio available
   const hasAudioBuffer = !!cell.audioBuffer;
 
-  // Sync volume to video element for fallback mode (React Effect)
   useEffect(() => {
     if (videoRef.current && !hasAudioBuffer) {
       videoRef.current.volume = Math.min(1.0, Math.max(0, cell.volume));
-      videoRef.current.muted = false; // Force unmute if no audio buffer
+      videoRef.current.muted = false;
     }
   }, [cell.volume, hasAudioBuffer]);
 
-  // Robustness: ensure video seeks to start time immediately when loaded
-  // This prevents the "black box" syndrome if the video starts in darkness or isn't seeked yet
   const handleMetadataLoaded = () => {
     if (videoRef.current) {
       videoRef.current.currentTime = cell.startTime;
     }
   };
 
+  const stopPlayback = () => {
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.currentTime = cell.startTime;
+    }
+    setIsPlaying(false);
+    if (playTimerRef.current) {
+      window.clearTimeout(playTimerRef.current);
+      playTimerRef.current = null;
+    }
+    activeSourceRef.current = null;
+  };
+
   const handlePointerDown = async (e: React.PointerEvent) => {
-    // If interacting with slider or delete button, don't play
     if ((e.target as HTMLElement).closest('.control-ui')) return;
+    if (cell.isEmpty) return;
+    if (isDeleteMode) return;
 
     e.preventDefault();
     if (e.pointerType === 'mouse' && e.button !== 0) return;
 
-    if (cell.isEmpty) {
-      if (!isDeleteMode) onRecord(cell.id);
-      return;
-    }
-
-    // Don't play if clicking delete (handled by the button specifically now)
-    if (isDeleteMode) return;
-
-    // 1. Audio Playback (Web Audio API) with Volume
     const ctx = getAudioContext();
     if (ctx.state === 'suspended') {
       await ctx.resume();
     }
 
+    const duration = cell.endTime - cell.startTime;
+
+    if (!cell.allowOverlap && activeSourceRef.current) {
+      try {
+        activeSourceRef.current.stop();
+      } catch (e) {}
+      activeSourceRef.current = null;
+    }
+
     if (cell.audioBuffer) {
-      // Optimized Path
       const source = ctx.createBufferSource();
       const gainNode = ctx.createGain(); 
-      
       source.buffer = cell.audioBuffer;
-      gainNode.gain.setValueAtTime(cell.volume, ctx.currentTime);
+      
+      gainNode.gain.setValueAtTime(0, ctx.currentTime);
+      gainNode.gain.linearRampToValueAtTime(cell.volume, ctx.currentTime + 0.005);
       
       source.connect(gainNode);
-      gainNode.connect(ctx.destination);
+      connectToMaster(gainNode);
       
-      source.start(0, cell.startTime);
+      source.onended = () => {
+        if (activeSourceRef.current === source) {
+          activeSourceRef.current = null;
+        }
+      };
+
+      source.start(0, cell.startTime, Math.max(0, duration));
+      activeSourceRef.current = source;
     } 
     
-    // 2. Video Playback (Visuals + Fallback Audio)
     if (videoRef.current) {
-      // Force volume update just in case
       if (!hasAudioBuffer) {
         videoRef.current.volume = Math.min(1.0, Math.max(0, cell.volume));
         videoRef.current.muted = false;
       } else {
         videoRef.current.muted = true;
       }
-
       videoRef.current.currentTime = cell.startTime;
-      
       try {
         await videoRef.current.play();
+        setIsPlaying(true);
+        if (playTimerRef.current) window.clearTimeout(playTimerRef.current);
+        playTimerRef.current = window.setTimeout(stopPlayback, Math.max(0, duration * 1000));
       } catch (err) {
-        // Ignore play interruption errors
         console.warn("Video play interrupted", err);
       }
-      
-      setIsPlaying(true);
-      setTimeout(() => setIsPlaying(false), 150);
     }
   };
 
   useEffect(() => {
-    const vid = videoRef.current;
-    if (!vid) return;
-
-    const handleEnded = () => {
-      setIsPlaying(false);
-      vid.currentTime = cell.startTime; 
+    return () => {
+      if (playTimerRef.current) window.clearTimeout(playTimerRef.current);
+      if (activeSourceRef.current) {
+        try { activeSourceRef.current.stop(); } catch(e) {}
+      }
     };
+  }, []);
 
-    vid.addEventListener('ended', handleEnded);
-    return () => vid.removeEventListener('ended', handleEnded);
-  }, [cell.videoUrl, cell.startTime]);
+  const videoStyle: React.CSSProperties = {
+    transform: `translate(${cell.transform.x * 100}%, ${cell.transform.y * 100}%) scale(${cell.transform.scale}) rotate(${cell.transform.rotation || 0}deg)`,
+    transition: 'transform 0.1s ease-out',
+    willChange: 'transform'
+  };
 
   return (
     <div 
       onPointerDown={handlePointerDown}
       className={`
-        relative w-full h-full rounded-xl overflow-hidden cursor-pointer select-none
-        transform transition-all duration-75 touch-none
-        ${!isDeleteMode && 'active:scale-95'}
-        ${cell.isEmpty ? 'bg-gray-800 border-2 border-gray-700 border-dashed hover:bg-gray-750' : 'bg-black shadow-lg shadow-purple-900/20'}
-        ${isPlaying ? 'ring-2 ring-pink-500 brightness-110' : ''}
+        relative w-full h-full rounded-2xl overflow-hidden cursor-pointer select-none
+        transform transition-all duration-75 touch-none border-2
+        ${!isDeleteMode && !cell.isEmpty && 'active:scale-95'}
+        ${cell.isEmpty ? 'bg-gray-900/50 border-gray-800 border-dashed' : 'bg-black shadow-xl border-white/5'}
+        ${isPlaying ? 'ring-4 ring-pink-500/50 border-pink-400 brightness-125 z-10' : ''}
       `}
     >
       {cell.isEmpty ? (
-        <div className="w-full h-full flex flex-col items-center justify-center text-gray-500">
-          <Plus className="w-8 h-8 mb-1 opacity-50" />
-          <span className="text-xs font-mono opacity-50">REC</span>
+        <div className="w-full h-full flex items-center justify-center gap-2 p-1.5">
+          <button 
+            onClick={() => onRecord(cell.id)}
+            className="flex-1 h-full flex flex-col items-center justify-center bg-gray-800/80 hover:bg-gray-700/80 rounded-xl transition-all text-gray-400 hover:text-pink-500 group"
+          >
+            <Video className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[8px] font-black uppercase tracking-widest">Record</span>
+          </button>
+          <button 
+            onClick={() => onImport(cell.id)}
+            className="flex-1 h-full flex flex-col items-center justify-center bg-gray-800/80 hover:bg-gray-700/80 rounded-xl transition-all text-gray-400 hover:text-blue-400 group"
+          >
+            <Upload className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[8px] font-black uppercase tracking-widest">Import</span>
+          </button>
         </div>
       ) : (
         <>
-          {/* 
-            CRITICAL FIX: key={cell.videoUrl} 
-            This forces React to completely replace the video element if the URL changes 
-            (e.g., after a reload or background refresh). This fixes the "black box" issue
-            by ensuring the DOM element is fresh and not holding onto a stale texture.
-          */}
           <video 
             key={cell.videoUrl} 
             ref={videoRef}
             src={cell.videoUrl!}
             playsInline
             webkit-playsinline="true"
-            // Ensure muted logic is correct based on whether we have a buffer
             muted={hasAudioBuffer}
             onLoadedMetadata={handleMetadataLoaded}
+            style={videoStyle}
             className="w-full h-full object-cover pointer-events-none"
             preload="auto"
           />
-          <div className={`absolute inset-0 bg-pink-500/20 pointer-events-none transition-opacity duration-75 ${isPlaying ? 'opacity-100' : 'opacity-0'}`} />
+          <div className={`absolute inset-0 bg-gradient-to-t from-pink-500/40 to-transparent pointer-events-none transition-opacity duration-75 ${isPlaying ? 'opacity-100' : 'opacity-0'}`} />
         </>
       )}
 
-      {/* Edit Mode Overlay */}
       {isDeleteMode && !cell.isEmpty && (
-        <div className="absolute inset-0 z-10 bg-black/60 backdrop-blur-[1px] flex flex-col items-center justify-between p-2 animate-in fade-in duration-200">
-          
-          {/* Delete Button */}
-          <div className="w-full flex justify-end">
+        <div className="absolute inset-0 z-10 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-between p-3">
+          <div className="w-full flex justify-between gap-2">
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete(cell.id);
-              }}
-              className="control-ui p-2 bg-red-500/80 hover:bg-red-600 text-white rounded-full transition-colors shadow-sm"
+              onClick={(e) => { e.stopPropagation(); onTrim(cell.id); }}
+              className="control-ui p-2.5 bg-blue-500 hover:bg-blue-400 text-white rounded-xl transition-all shadow-lg active:scale-90"
             >
-              <Trash2 className="w-5 h-5" />
+              <Scissors className="w-4 h-4" />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleOverlap(cell.id, !cell.allowOverlap); }}
+              className={`control-ui p-2.5 rounded-xl transition-all shadow-lg active:scale-90 ${cell.allowOverlap ? 'bg-orange-500 text-white' : 'bg-gray-700 text-gray-400'}`}
+            >
+              <Layers className="w-4 h-4" />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete(cell.id); }}
+              className="control-ui p-2.5 bg-red-500 hover:bg-red-400 text-white rounded-xl transition-all shadow-lg active:scale-90"
+            >
+              <Trash2 className="w-4 h-4" />
             </button>
           </div>
-
-          {/* Volume Slider */}
-          <div className="flex-1 w-full flex items-center justify-center relative">
-            <div className="control-ui flex flex-col items-center h-full justify-center gap-2 w-full">
-               <input
-                type="range"
-                min="0"
-                max="4" 
-                step="0.1"
-                value={cell.volume}
-                onChange={(e) => onVolumeChange(cell.id, parseFloat(e.target.value))}
-                onClick={(e) => e.stopPropagation()}
-                onPointerDown={(e) => e.stopPropagation()} 
-                className="w-24 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer -rotate-90 origin-center accent-pink-500 touch-pan-y"
-              />
-            </div>
+          <div className="flex-1 w-full flex items-center justify-center px-1">
+            <input
+              type="range"
+              min="0" max="10" step="0.1"
+              value={cell.volume}
+              onChange={(e) => onVolumeChange(cell.id, parseFloat(e.target.value))}
+              className="control-ui w-full h-2 bg-gray-800 rounded-full appearance-none cursor-pointer accent-pink-500"
+            />
           </div>
-
-          {/* Volume Icon Indicator */}
-          <div className="w-full flex justify-center pb-1">
-             {cell.volume === 0 ? (
-               <VolumeX className="w-4 h-4 text-gray-400" />
-             ) : (
-               <Volume2 className="w-4 h-4 text-gray-200" style={{ opacity: Math.min(1, Math.max(0.3, cell.volume)) }} />
-             )}
+          <div className="w-full flex items-center justify-center gap-1.5 pb-1">
+             {cell.volume === 0 ? <VolumeX className="w-4 h-4 text-red-500" /> : 
+              cell.volume > 5 ? <Volume2 className="w-4 h-4 text-pink-500 animate-pulse" /> : 
+              <Volume1 className="w-4 h-4 text-gray-300" />}
+             <span className="text-[10px] font-black text-gray-400 w-6 text-center">{cell.volume.toFixed(1)}</span>
           </div>
         </div>
       )}
