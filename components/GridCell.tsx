@@ -1,14 +1,14 @@
-import React, { useRef, useEffect, useState } from 'react';
+
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { PadCell } from '../types';
-import { Trash2, Volume2, VolumeX, Video, Upload, Scissors, Layers, Volume1 } from 'lucide-react';
+import { Trash2, Volume2, VolumeX, Video, Layers, Volume1 } from 'lucide-react';
 import { getAudioContext, connectToMaster } from '../services/audio';
 
 interface GridCellProps {
   cell: PadCell;
   isDeleteMode: boolean;
+  isSuspended: boolean;
   onRecord: (id: number) => void;
-  onImport: (id: number) => void;
-  onTrim: (id: number) => void;
   onDelete: (id: number) => void;
   onVolumeChange: (id: number, volume: number) => void;
   onToggleOverlap: (id: number, allowOverlap: boolean) => void;
@@ -17,9 +17,8 @@ interface GridCellProps {
 export const GridCell: React.FC<GridCellProps> = ({ 
   cell, 
   isDeleteMode, 
+  isSuspended,
   onRecord, 
-  onImport,
-  onTrim,
   onDelete,
   onVolumeChange,
   onToggleOverlap
@@ -27,40 +26,27 @@ export const GridCell: React.FC<GridCellProps> = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const playTimerRef = useRef<number | null>(null);
-  const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const activeSources = useRef<Set<AudioBufferSourceNode>>(new Set());
   
-  const hasAudioBuffer = !!cell.audioBuffer;
-
+  // Gestión de suspensión: Solo pausamos, no borramos el SRC para evitar el "moteo" (parpadeo negro)
   useEffect(() => {
-    if (videoRef.current && !hasAudioBuffer) {
-      videoRef.current.volume = Math.min(1.0, Math.max(0, cell.volume));
-      videoRef.current.muted = false;
+    if (isSuspended && videoRef.current) {
+      videoRef.current.pause();
     }
-  }, [cell.volume, hasAudioBuffer]);
+  }, [isSuspended]);
 
-  const handleMetadataLoaded = () => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = cell.startTime;
-    }
-  };
-
-  const stopPlayback = () => {
+  const stopVisuals = useCallback(() => {
+    setIsPlaying(false);
     if (videoRef.current) {
       videoRef.current.pause();
+      // Volvemos al inicio del sample para que la miniatura sea coherente
       videoRef.current.currentTime = cell.startTime;
     }
-    setIsPlaying(false);
-    if (playTimerRef.current) {
-      window.clearTimeout(playTimerRef.current);
-      playTimerRef.current = null;
-    }
-    activeSourceRef.current = null;
-  };
+  }, [cell.startTime]);
 
   const handlePointerDown = async (e: React.PointerEvent) => {
     if ((e.target as HTMLElement).closest('.control-ui')) return;
-    if (cell.isEmpty) return;
-    if (isDeleteMode) return;
+    if (cell.isEmpty || isDeleteMode || isSuspended) return;
 
     e.preventDefault();
     if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -72,49 +58,45 @@ export const GridCell: React.FC<GridCellProps> = ({
 
     const duration = cell.endTime - cell.startTime;
 
-    if (!cell.allowOverlap && activeSourceRef.current) {
-      try {
-        activeSourceRef.current.stop();
-      } catch (e) {}
-      activeSourceRef.current = null;
+    // Gestión de Polifonía (Overlap)
+    if (!cell.allowOverlap) {
+      activeSources.current.forEach(source => {
+        try { source.stop(); } catch (err) {}
+      });
+      activeSources.current.clear();
     }
 
+    // DISPARO DE AUDIO (Web Audio API)
     if (cell.audioBuffer) {
       const source = ctx.createBufferSource();
       const gainNode = ctx.createGain(); 
       source.buffer = cell.audioBuffer;
       
-      gainNode.gain.setValueAtTime(0, ctx.currentTime);
-      gainNode.gain.linearRampToValueAtTime(cell.volume, ctx.currentTime + 0.005);
+      const vol = Math.max(0, cell.volume / 10);
+      gainNode.gain.setValueAtTime(vol, ctx.currentTime);
       
       source.connect(gainNode);
       connectToMaster(gainNode);
       
-      source.onended = () => {
-        if (activeSourceRef.current === source) {
-          activeSourceRef.current = null;
-        }
-      };
+      activeSources.current.add(source);
+      source.onended = () => activeSources.current.delete(source);
 
       source.start(0, cell.startTime, Math.max(0, duration));
-      activeSourceRef.current = source;
     } 
     
-    if (videoRef.current) {
-      if (!hasAudioBuffer) {
-        videoRef.current.volume = Math.min(1.0, Math.max(0, cell.volume));
-        videoRef.current.muted = false;
-      } else {
-        videoRef.current.muted = true;
-      }
+    // DISPARO DE VÍDEO
+    if (videoRef.current && !isSuspended) {
+      videoRef.current.muted = true;
       videoRef.current.currentTime = cell.startTime;
+      
       try {
         await videoRef.current.play();
         setIsPlaying(true);
+        
         if (playTimerRef.current) window.clearTimeout(playTimerRef.current);
-        playTimerRef.current = window.setTimeout(stopPlayback, Math.max(0, duration * 1000));
+        playTimerRef.current = window.setTimeout(stopVisuals, Math.max(0, duration * 1000));
       } catch (err) {
-        console.warn("Video play interrupted", err);
+        console.warn("Hardware decoder limit or user gesture requirement");
       }
     }
   };
@@ -122,9 +104,9 @@ export const GridCell: React.FC<GridCellProps> = ({
   useEffect(() => {
     return () => {
       if (playTimerRef.current) window.clearTimeout(playTimerRef.current);
-      if (activeSourceRef.current) {
-        try { activeSourceRef.current.stop(); } catch(e) {}
-      }
+      activeSources.current.forEach(source => {
+        try { source.stop(); } catch(e) {}
+      });
     };
   }, []);
 
@@ -141,63 +123,54 @@ export const GridCell: React.FC<GridCellProps> = ({
         relative w-full h-full rounded-2xl overflow-hidden cursor-pointer select-none
         transform transition-all duration-75 touch-none border-2
         ${!isDeleteMode && !cell.isEmpty && 'active:scale-95'}
-        ${cell.isEmpty ? 'bg-gray-900/50 border-gray-800 border-dashed' : 'bg-black shadow-xl border-white/5'}
-        ${isPlaying ? 'ring-4 ring-pink-500/50 border-pink-400 brightness-125 z-10' : ''}
+        ${cell.isEmpty ? 'bg-gray-900/40 border-gray-800 border-dashed hover:bg-gray-800/40' : 'bg-black shadow-xl border-white/5'}
+        ${isPlaying ? 'ring-4 ring-pink-500/50 border-pink-400 brightness-110 z-10 scale-[1.03]' : ''}
       `}
     >
       {cell.isEmpty ? (
-        <div className="w-full h-full flex items-center justify-center gap-2 p-1.5">
+        <div className="w-full h-full flex items-center justify-center p-4">
           <button 
             onClick={() => onRecord(cell.id)}
-            className="flex-1 h-full flex flex-col items-center justify-center bg-gray-800/80 hover:bg-gray-700/80 rounded-xl transition-all text-gray-400 hover:text-pink-500 group"
+            className="w-full h-full flex flex-col items-center justify-center bg-gray-800/60 hover:bg-gray-700/80 rounded-2xl transition-all text-gray-400 hover:text-pink-500 group"
           >
-            <Video className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" />
-            <span className="text-[8px] font-black uppercase tracking-widest">Record</span>
-          </button>
-          <button 
-            onClick={() => onImport(cell.id)}
-            className="flex-1 h-full flex flex-col items-center justify-center bg-gray-800/80 hover:bg-gray-700/80 rounded-xl transition-all text-gray-400 hover:text-blue-400 group"
-          >
-            <Upload className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" />
-            <span className="text-[8px] font-black uppercase tracking-widest">Import</span>
+            <Video className="w-8 h-8 mb-2 group-hover:scale-110 transition-transform" />
+            <span className="text-[9px] font-black uppercase tracking-[0.2em]">Grabar Pad</span>
           </button>
         </div>
       ) : (
         <>
           <video 
-            key={cell.videoUrl} 
             ref={videoRef}
-            src={cell.videoUrl!}
+            src={cell.videoUrl || undefined}
             playsInline
-            webkit-playsinline="true"
-            muted={hasAudioBuffer}
-            onLoadedMetadata={handleMetadataLoaded}
+            muted
             style={videoStyle}
-            className="w-full h-full object-cover pointer-events-none"
+            className={`w-full h-full object-cover pointer-events-none transition-opacity duration-300 ${isSuspended ? 'opacity-40 grayscale' : 'opacity-100'}`}
             preload="auto"
           />
-          <div className={`absolute inset-0 bg-gradient-to-t from-pink-500/40 to-transparent pointer-events-none transition-opacity duration-75 ${isPlaying ? 'opacity-100' : 'opacity-0'}`} />
+          {isSuspended && (
+            <div className="absolute inset-0 bg-pink-500/5 backdrop-blur-[1px] flex items-center justify-center pointer-events-none">
+              <div className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-pulse" />
+            </div>
+          )}
+          <div className={`absolute inset-0 bg-gradient-to-t from-pink-500/30 to-transparent pointer-events-none transition-opacity duration-100 ${isPlaying ? 'opacity-100' : 'opacity-0'}`} />
         </>
       )}
 
       {isDeleteMode && !cell.isEmpty && (
-        <div className="absolute inset-0 z-10 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-between p-3">
-          <div className="w-full flex justify-between gap-2">
-            <button
-              onClick={(e) => { e.stopPropagation(); onTrim(cell.id); }}
-              className="control-ui p-2.5 bg-blue-500 hover:bg-blue-400 text-white rounded-xl transition-all shadow-lg active:scale-90"
-            >
-              <Scissors className="w-4 h-4" />
-            </button>
+        <div className="absolute inset-0 z-10 bg-black/85 backdrop-blur-sm flex flex-col items-center justify-between p-3 animate-in fade-in zoom-in-95 duration-200">
+          <div className="w-full flex justify-end gap-2">
             <button
               onClick={(e) => { e.stopPropagation(); onToggleOverlap(cell.id, !cell.allowOverlap); }}
-              className={`control-ui p-2.5 rounded-xl transition-all shadow-lg active:scale-90 ${cell.allowOverlap ? 'bg-orange-500 text-white' : 'bg-gray-700 text-gray-400'}`}
+              className={`control-ui p-2.5 rounded-xl transition-all shadow-lg active:scale-90 ${cell.allowOverlap ? 'bg-orange-500 text-white' : 'bg-gray-800 text-gray-500'}`}
+              title="Permitir solapamiento"
             >
               <Layers className="w-4 h-4" />
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); onDelete(cell.id); }}
-              className="control-ui p-2.5 bg-red-500 hover:bg-red-400 text-white rounded-xl transition-all shadow-lg active:scale-90"
+              className="control-ui p-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl transition-all shadow-lg active:scale-90"
+              title="Borrar pad"
             >
               <Trash2 className="w-4 h-4" />
             </button>
@@ -208,14 +181,14 @@ export const GridCell: React.FC<GridCellProps> = ({
               min="0" max="10" step="0.1"
               value={cell.volume}
               onChange={(e) => onVolumeChange(cell.id, parseFloat(e.target.value))}
-              className="control-ui w-full h-2 bg-gray-800 rounded-full appearance-none cursor-pointer accent-pink-500"
+              className="control-ui w-full h-1.5 bg-gray-700 rounded-full appearance-none cursor-pointer accent-pink-500"
             />
           </div>
-          <div className="w-full flex items-center justify-center gap-1.5 pb-1">
+          <div className="w-full flex items-center justify-center gap-2 pb-1">
              {cell.volume === 0 ? <VolumeX className="w-4 h-4 text-red-500" /> : 
-              cell.volume > 5 ? <Volume2 className="w-4 h-4 text-pink-500 animate-pulse" /> : 
-              <Volume1 className="w-4 h-4 text-gray-300" />}
-             <span className="text-[10px] font-black text-gray-400 w-6 text-center">{cell.volume.toFixed(1)}</span>
+              cell.volume > 5 ? <Volume2 className="w-4 h-4 text-pink-500" /> : 
+              <Volume1 className="w-4 h-4 text-gray-400" />}
+             <span className="text-[10px] font-black text-gray-400 tabular-nums">{cell.volume.toFixed(1)}</span>
           </div>
         </div>
       )}
