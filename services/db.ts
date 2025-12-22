@@ -1,3 +1,4 @@
+
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
 
 interface MadPadDB extends DBSchema {
@@ -10,7 +11,7 @@ interface MadPadDB extends DBSchema {
       endTime: number;
       volume?: number;
       transform?: { scale: number; x: number; y: number };
-      allowOverlap?: boolean; // Added
+      allowOverlap?: boolean;
     };
   };
 }

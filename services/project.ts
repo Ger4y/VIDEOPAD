@@ -1,3 +1,4 @@
+
 import JSZip from 'jszip';
 import { getAllClips, saveClip, deleteClip } from './db';
 
@@ -18,9 +19,6 @@ interface ProjectFile {
   clips: ClipMetadata[];
 }
 
-/**
- * Exporta el proyecto completo como un archivo .zip (con extensión .madpad.zip para claridad)
- */
 export const exportProject = async (projectName: string): Promise<void> => {
   const zip = new JSZip();
   const clips = await getAllClips();
@@ -35,7 +33,6 @@ export const exportProject = async (projectName: string): Promise<void> => {
   const videoFolder = zip.folder("video_assets");
 
   for (const clip of clips) {
-    // Usamos .mp4 como extensión interna para que el navegador lo reconozca mejor al desempaquetar
     const filename = `pad_${clip.id}.mp4`; 
     if (videoFolder) {
       videoFolder.file(filename, clip.blob);
@@ -64,17 +61,13 @@ export const exportProject = async (projectName: string): Promise<void> => {
   const a = document.createElement('a');
   a.href = url;
   const safeName = projectName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-  // Forzamos .zip al final para que los sistemas operativos no se confundan
-  a.download = `${safeName || 'videopad'}.madpad.zip`;
+  a.download = `${safeName || 'videopad_project'}.zip`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 };
 
-/**
- * Importa un proyecto desde un archivo .madpad, .zip o .madpad.zip
- */
 export const importProject = async (file: File): Promise<string> => {
   const zip = new JSZip();
   let loadedZip;
@@ -82,12 +75,12 @@ export const importProject = async (file: File): Promise<string> => {
   try {
     loadedZip = await zip.loadAsync(file);
   } catch (e) {
-    throw new Error("El archivo no es un archivo ZIP válido.");
+    throw new Error("El archivo no es un ZIP válido.");
   }
 
   const manifestFile = loadedZip.file("project_manifest.json") || loadedZip.file("project.json");
   if (!manifestFile) {
-    throw new Error("El archivo no contiene un manifiesto de VideoPad.");
+    throw new Error("No se encontró el manifiesto del proyecto.");
   }
 
   const metadataStr = await manifestFile.async("string");
@@ -102,8 +95,11 @@ export const importProject = async (file: File): Promise<string> => {
     const videoFile = loadedZip.file(clipData.filename);
     if (videoFile) {
       const arrayBuffer = await videoFile.async("arraybuffer");
-      // Importante: recrear el Blob con un tipo MIME explícito
-      const videoBlob = new Blob([arrayBuffer], { type: 'video/mp4' }); 
+      // CRITICAL: Forzar video/mp4 incluso si el archivo original era .bin
+      let mimeType = 'video/mp4';
+      if (clipData.filename.toLowerCase().endsWith('.webm')) mimeType = 'video/webm';
+      
+      const videoBlob = new Blob([arrayBuffer], { type: mimeType }); 
       await saveClip(
         clipData.id, 
         videoBlob, 
