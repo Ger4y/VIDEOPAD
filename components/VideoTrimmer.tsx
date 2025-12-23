@@ -1,301 +1,257 @@
 
 import React, { useRef, useState, useEffect } from 'react';
-import { Check, X, Play, Pause, Scissors, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
-import { PadTransform } from '../types';
+import { X, Check, Play, Pause, Scissors, AlertCircle, Loader2 } from 'lucide-react';
+import { getAudioContext } from '../services/audio';
 
 interface VideoTrimmerProps {
   blob: Blob;
-  initialStartTime: number;
-  initialEndTime?: number;
-  initialTransform?: PadTransform;
-  onSave: (startTime: number, endTime: number, transform: PadTransform) => void;
+  initialUrl: string;
+  initialStart: number;
+  initialEnd: number;
+  volume: number;
+  onSave: (start: number, end: number) => void;
   onCancel: () => void;
 }
 
-export const VideoTrimmer: React.FC<VideoTrimmerProps> = ({ 
-  blob, 
-  initialStartTime, 
-  initialEndTime,
-  initialTransform,
-  onSave, 
-  onCancel 
+export const VideoTrimmer: React.FC<VideoTrimmerProps> = ({
+  blob,
+  initialUrl,
+  initialStart,
+  initialEnd,
+  volume,
+  onSave,
+  onCancel
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  
-  const [startTime, setStartTime] = useState(initialStartTime);
-  const [endTime, setEndTime] = useState(initialEndTime || 0);
+  const [startTime, setStartTime] = useState(initialStart);
+  const [endTime, setEndTime] = useState(initialEnd);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [retryCount, setRetryCount] = useState(0);
+  const [lastMoved, setLastMoved] = useState<'start' | 'end'>('end');
 
-  const [transform, setTransform] = useState<PadTransform>(initialTransform || { scale: 1, x: 0, y: 0, rotation: 0 });
-  const touchState = useRef({
-    initialDistance: 0,
-    initialScale: 1,
-    initialX: 0,
-    initialY: 0,
-    centerX: 0,
-    centerY: 0,
-    isPinching: false
-  });
-
-  useEffect(() => {
-    // Forzamos un contenedor limpio para el blob
-    const mimeType = blob.type && blob.type.includes('/') ? blob.type : 'video/mp4';
-    const robustBlob = new Blob([blob], { type: mimeType });
-    const url = URL.createObjectURL(robustBlob);
-    setVideoUrl(url);
-
-    return () => {
-      if (videoRef.current) {
-        videoRef.current.pause();
-        videoRef.current.src = "";
-        videoRef.current.removeAttribute('src');
-        videoRef.current.load();
-      }
-      if (url) URL.revokeObjectURL(url);
-    };
-  }, [blob, retryCount]);
-
-  const handleLoadedMetadata = () => {
-    if (videoRef.current) {
-      let d = videoRef.current.duration;
-      if (!isFinite(d) || d === 0 || isNaN(d)) {
-        // Truco para disparar el motor de búsqueda de duración en Chrome/Safari
-        videoRef.current.currentTime = 1e10; 
-        return;
-      }
-      setDuration(d);
-      if (!initialEndTime || initialEndTime > d || initialEndTime === 0) {
-        setEndTime(d);
-      }
-      videoRef.current.currentTime = startTime;
-      setIsReady(true);
-      setError(null);
-    }
-  };
-
-  const handleSeeked = () => {
-    if (videoRef.current && (!isFinite(duration) || duration === 0)) {
-      const d = videoRef.current.duration;
-      if (isFinite(d) && d > 0) {
-        setDuration(d);
-        if (!initialEndTime || initialEndTime > d || initialEndTime === 0) {
-          setEndTime(d);
-        }
-        videoRef.current.currentTime = startTime;
-        setIsReady(true);
-      }
-    }
-  };
-
-  const handleVideoError = () => {
-    if (!isReady) {
-      console.warn("Video error in Trimmer", videoRef.current?.error);
-      if (retryCount < 2) {
-        setRetryCount(prev => prev + 1);
-      } else {
-        setError("Error de motor: El navegador ha bloqueado el vídeo. Reinicia la app o libera memoria.");
-      }
-    }
-  };
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const handleTimeUpdate = () => {
-      if (video.currentTime >= endTime) {
-        if (isPlaying) {
-          video.currentTime = startTime;
-        } else {
-          video.pause();
-          setIsPlaying(false);
-          video.currentTime = startTime;
-        }
-      }
-    };
-
-    video.addEventListener('timeupdate', handleTimeUpdate);
-    return () => video.removeEventListener('timeupdate', handleTimeUpdate);
-  }, [endTime, startTime, isPlaying]);
-
-  const togglePlay = async (e?: React.MouseEvent) => {
-    e?.stopPropagation();
-    if (!videoRef.current || !isReady) return;
+  const handleLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const video = e.currentTarget;
+    let vidDur = video.duration;
     
-    if (isPlaying) {
-      videoRef.current.pause();
-      setIsPlaying(false);
+    video.volume = Math.max(0, Math.min(1, volume / 10));
+    
+    // Fallback agresivo para duración
+    if (!vidDur || isNaN(vidDur) || vidDur === Infinity) {
+      console.warn("Trimmer: Duración no detectada inmediatamente, esperando...");
+      // Intentamos forzar la detección si es un blob conflictivo
+      video.currentTime = 1e9;
+      video.onseeked = () => {
+        video.onseeked = null;
+        const realDur = video.duration || 5;
+        setDuration(realDur);
+        setupInitialRange(realDur);
+        video.currentTime = startTime;
+        setIsReady(true);
+      };
     } else {
-      if (videoRef.current.currentTime >= endTime || videoRef.current.currentTime < startTime) {
-        videoRef.current.currentTime = startTime;
+      setDuration(vidDur);
+      setupInitialRange(vidDur);
+      video.currentTime = startTime;
+      setIsReady(true);
+    }
+    setError(null);
+  };
+
+  const setupInitialRange = (dur: number) => {
+    const start = Math.max(0, Math.min(initialStart, dur - 0.1));
+    // Si initialEnd es 0 o mayor que la duración real, usamos la duración real
+    const end = (initialEnd > 0 && initialEnd <= dur) ? initialEnd : dur;
+    setStartTime(start);
+    setEndTime(end);
+  };
+
+  const handleVideoError = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const err = e.currentTarget.error;
+    setError(err ? `Error: ${err.code}` : "Error al cargar la previsualización.");
+  };
+
+  const handleTimeUpdate = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const video = e.currentTarget;
+    if (video.currentTime >= endTime) {
+      video.currentTime = startTime;
+      if (!isPlaying) video.pause();
+    }
+  };
+
+  const togglePlay = async () => {
+    const video = videoRef.current;
+    if (video) {
+      if (isPlaying) {
+        video.pause();
+      } else {
+        const ctx = getAudioContext();
+        if (ctx.state === 'suspended') await ctx.resume();
+
+        if (video.currentTime >= endTime || video.currentTime < startTime) {
+          video.currentTime = startTime;
+        }
+        video.play().catch(() => setIsPlaying(false));
       }
-      try {
-        await videoRef.current.play();
-        setIsPlaying(true);
-      } catch (err) {
-        console.error("Play failed", err);
-        setIsPlaying(false);
-      }
+      setIsPlaying(!isPlaying);
     }
   };
 
-  const onTouchStart = (e: React.TouchEvent) => {
-    if (e.touches.length === 2) {
-      const dist = Math.hypot(
-        e.touches[0].pageX - e.touches[1].pageX,
-        e.touches[0].pageY - e.touches[1].pageY
-      );
-      touchState.current.initialDistance = dist;
-      touchState.current.initialScale = transform.scale;
-      touchState.current.isPinching = true;
-    } else if (e.touches.length === 1) {
-      touchState.current.centerX = e.touches[0].pageX;
-      touchState.current.centerY = e.touches[0].pageY;
-      touchState.current.initialX = transform.x;
-      touchState.current.initialY = transform.y;
-      touchState.current.isPinching = false;
+  const handleStartChange = (val: string) => {
+    const v = parseFloat(val);
+    if (v < endTime - 0.05) {
+      setStartTime(v);
+      setLastMoved('start');
+      if (videoRef.current) videoRef.current.currentTime = v;
     }
   };
 
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (!containerRef.current) return;
-    const { clientWidth, clientHeight } = containerRef.current;
-
-    if (e.touches.length === 2 && touchState.current.isPinching) {
-      const dist = Math.hypot(
-        e.touches[0].pageX - e.touches[1].pageX,
-        e.touches[0].pageY - e.touches[1].pageY
-      );
-      const scaleChange = dist / touchState.current.initialDistance;
-      const newScale = Math.min(Math.max(touchState.current.initialScale * scaleChange, 1), 5);
-      setTransform(prev => ({ ...prev, scale: newScale }));
-    } else if (e.touches.length === 1 && !touchState.current.isPinching) {
-      const deltaX = (e.touches[0].pageX - touchState.current.centerX) / clientWidth;
-      const deltaY = (e.touches[0].pageY - touchState.current.centerY) / clientHeight;
-      setTransform(prev => ({
-        ...prev,
-        x: touchState.current.initialX + deltaX,
-        y: touchState.current.initialY + deltaY
-      }));
+  const handleEndChange = (val: string) => {
+    const v = parseFloat(val);
+    if (v > startTime + 0.05) {
+      setEndTime(v);
+      setLastMoved('end');
+      if (videoRef.current) videoRef.current.currentTime = v;
     }
   };
-
-  if (!videoUrl) return null;
 
   return (
-    <div className="fixed inset-0 z-[60] bg-black/98 backdrop-blur-2xl flex flex-col items-center justify-center p-4">
-      <div className="w-full max-w-md bg-gray-900 rounded-[2.5rem] overflow-hidden shadow-2xl border border-gray-800 flex flex-col animate-in zoom-in-95 duration-200">
-        <div className="p-5 border-b border-gray-800 flex justify-between items-center bg-gray-900/50">
-          <div className="flex items-center gap-2 text-pink-500">
-            <Scissors className="w-5 h-5" />
-            <h3 className="font-black text-base uppercase tracking-tight">Editar Pad</h3>
+    <div className="fixed inset-0 z-[120] bg-black/95 backdrop-blur-3xl flex flex-col animate-in fade-in duration-300">
+      <header className="p-6 flex justify-between items-center border-b border-white/5 bg-black/40">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-pink-500/20 rounded-xl border border-pink-500/30">
+            <Scissors className="w-5 h-5 text-pink-500" />
           </div>
-          <button onClick={onCancel} className="p-2 hover:bg-gray-800 rounded-full transition-colors text-gray-400">
-            <X className="w-6 h-6" />
-          </button>
+          <div>
+            <h2 className="text-lg font-black uppercase tracking-tight text-white">Editor de Recorte</h2>
+            <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Ajusta los puntos de disparo</p>
+          </div>
+        </div>
+        <button onClick={onCancel} className="p-3 hover:bg-white/10 rounded-full transition-colors text-gray-400 hover:text-white">
+          <X className="w-6 h-6" />
+        </button>
+      </header>
+
+      <main className="flex-1 flex flex-col items-center justify-center p-4 sm:p-10 gap-8 overflow-y-auto no-scrollbar">
+        <div className="relative w-full max-w-md aspect-square bg-gray-950 rounded-[2.5rem] overflow-hidden shadow-2xl border border-white/10 ring-1 ring-white/5">
+          {error ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center bg-gray-950 gap-6">
+              <AlertCircle className="w-10 h-10 text-red-500" />
+              <p className="text-sm font-bold text-gray-300">{error}</p>
+              <button onClick={onCancel} className="px-6 py-3 bg-gray-800 rounded-xl text-[10px] font-black uppercase tracking-widest">Cancelar</button>
+            </div>
+          ) : (
+            <>
+              <video 
+                ref={videoRef}
+                src={initialUrl}
+                playsInline
+                preload="auto"
+                onLoadedMetadata={handleLoadedMetadata}
+                onError={handleVideoError}
+                onTimeUpdate={handleTimeUpdate}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+                className={`w-full h-full object-cover transition-opacity duration-500 ${isReady ? 'opacity-100' : 'opacity-0'}`}
+              />
+              {!isReady && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-950 gap-4">
+                  <Loader2 className="w-10 h-10 text-pink-500 animate-spin" />
+                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Analizando vídeo...</p>
+                </div>
+              )}
+              {isReady && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <button 
+                    onClick={togglePlay}
+                    className="w-24 h-24 bg-black/40 backdrop-blur-xl rounded-full flex items-center justify-center scale-90 hover:scale-100 transition-all border border-white/20 shadow-2xl z-10 group"
+                  >
+                    {isPlaying ? <Pause className="w-10 h-10 fill-white text-white" /> : <Play className="w-10 h-10 fill-white text-white ml-2" />}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
         </div>
 
-        <div 
-          ref={containerRef}
-          className="relative aspect-square bg-black flex items-center justify-center overflow-hidden touch-none"
-          onTouchStart={onTouchStart}
-          onTouchMove={onTouchMove}
-        >
-          <video
-            key={videoUrl + retryCount}
-            ref={videoRef}
-            src={videoUrl}
-            preload="auto"
-            playsInline
-            style={{
-              transform: `translate(${transform.x * 100}%, ${transform.y * 100}%) scale(${transform.scale}) rotate(${transform.rotation}deg)`,
-              transition: touchState.current.isPinching ? 'none' : 'transform 0.1s ease-out',
-              willChange: 'transform'
-            }}
-            className={`w-full h-full object-cover pointer-events-none transition-opacity duration-300 ${isReady ? 'opacity-100' : 'opacity-20'}`}
-            onLoadedMetadata={handleLoadedMetadata}
-            onSeeked={handleSeeked}
-            onError={handleVideoError}
-          />
-          
-          {!isReady && !error && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/40 backdrop-blur-sm">
-              <Loader2 className="w-10 h-10 text-pink-500 animate-spin mb-3" />
-              <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Liberando decodificadores...</p>
-            </div>
-          )}
+        {isReady && !error && (
+          <div className="w-full max-w-md space-y-10 bg-gray-900/40 p-8 rounded-[2rem] border border-white/5 backdrop-blur-md animate-in slide-in-from-bottom-6">
+            <div className="space-y-6">
+              <div className="flex justify-between text-[10px] font-black uppercase tracking-[0.2em]">
+                <div className="flex flex-col gap-1">
+                  <span className="text-gray-500">PUNTO DE INICIO</span>
+                  <span className="text-pink-500 text-base">{startTime.toFixed(2)}s</span>
+                </div>
+                <div className="flex flex-col gap-1 text-right">
+                  <span className="text-gray-500">PUNTO FINAL</span>
+                  <span className="text-white text-base">{endTime.toFixed(2)}s</span>
+                </div>
+              </div>
+              
+              <div className="relative h-20 flex items-center px-2">
+                <div className="absolute inset-x-2 h-1.5 bg-gray-800 rounded-full" />
+                <div 
+                  className="absolute h-1.5 bg-pink-500 shadow-[0_0_15px_rgba(236,72,153,0.5)] rounded-full"
+                  style={{ 
+                    left: `${(startTime / (duration || 1)) * 100}%`, 
+                    width: `${((endTime - startTime) / (duration || 1)) * 100}%` 
+                  }}
+                />
+                
+                {/* Deslizador de Inicio */}
+                <input
+                  type="range"
+                  min="0"
+                  max={duration || 10}
+                  step="0.01"
+                  value={startTime}
+                  onChange={(e) => handleStartChange(e.target.value)}
+                  onMouseDown={() => setLastMoved('start')}
+                  onTouchStart={() => setLastMoved('start')}
+                  className={`absolute inset-x-0 h-full appearance-none bg-transparent cursor-pointer pointer-events-none
+                    [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-10 [&::-webkit-slider-thumb]:w-10 
+                    [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-pink-500 [&::-webkit-slider-thumb]:border-4 
+                    [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:shadow-xl
+                    ${lastMoved === 'start' ? 'z-30' : 'z-20'}`}
+                />
 
-          {error && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center bg-gray-900">
-              <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
-              <p className="text-sm font-bold text-gray-300 mb-6">{error}</p>
-              <div className="flex gap-2">
-                <button onClick={() => setRetryCount(prev => prev + 1)} className="px-6 py-2 bg-gray-800 rounded-xl text-xs font-black uppercase flex items-center gap-2">
-                  <RefreshCw className="w-3 h-3" /> Reintentar
-                </button>
-                <button onClick={onCancel} className="px-6 py-2 bg-pink-600 rounded-xl text-xs font-black uppercase shadow-lg">Cerrar</button>
+                {/* Deslizador de Fin */}
+                <input
+                  type="range"
+                  min="0"
+                  max={duration || 10}
+                  step="0.01"
+                  value={endTime}
+                  onChange={(e) => handleEndChange(e.target.value)}
+                  onMouseDown={() => setLastMoved('end')}
+                  onTouchStart={() => setLastMoved('end')}
+                  className={`absolute inset-x-0 h-full appearance-none bg-transparent cursor-pointer pointer-events-none
+                    [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-10 [&::-webkit-slider-thumb]:w-10 
+                    [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:border-4 
+                    [&::-webkit-slider-thumb]:border-pink-500 [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:shadow-xl
+                    ${lastMoved === 'end' ? 'z-30' : 'z-20'}`}
+                />
               </div>
             </div>
-          )}
-          
-          {isReady && (
-            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+
+            <div className="flex gap-4">
               <button 
-                onClick={togglePlay}
-                className="pointer-events-auto w-16 h-16 bg-pink-600/30 hover:bg-pink-600/40 backdrop-blur-md rounded-full flex items-center justify-center border border-white/20 transition-all active:scale-90 shadow-2xl"
+                onClick={onCancel}
+                className="flex-1 py-5 bg-gray-800/40 text-gray-500 font-black text-[10px] rounded-2xl uppercase tracking-[0.2em] hover:text-white border border-white/5 transition-colors"
               >
-                {isPlaying ? <Pause className="w-8 h-8 text-white fill-white" /> : <Play className="w-8 h-8 text-white fill-white ml-1" />}
+                Cancelar
+              </button>
+              <button 
+                onClick={() => onSave(startTime, endTime)}
+                className="flex-[2] py-5 bg-white text-black font-black text-[10px] rounded-2xl uppercase tracking-[0.2em] shadow-2xl hover:bg-pink-500 hover:text-white transition-all flex items-center justify-center gap-3 active:scale-95"
+              >
+                <Check className="w-5 h-5" /> Aplicar Cambios
               </button>
             </div>
-          )}
-        </div>
-
-        <div className="p-6 space-y-6">
-          <div className="space-y-4">
-            <div className="flex justify-between items-center px-1">
-              <label className="text-[10px] font-black uppercase text-gray-500">In: {startTime.toFixed(2)}s</label>
-              <label className="text-[10px] font-black uppercase text-gray-500">Out: {endTime.toFixed(2)}s</label>
-            </div>
-            <input
-              type="range" min="0" max={duration || 100} step="0.01" value={startTime}
-              onChange={(e) => {
-                const val = parseFloat(e.target.value);
-                const newStart = Math.min(val, Math.max(0, endTime - 0.1));
-                setStartTime(newStart);
-                if (videoRef.current) videoRef.current.currentTime = newStart;
-              }}
-              className="w-full h-2 bg-gray-800 rounded-full appearance-none cursor-pointer accent-pink-500"
-            />
-            <input
-              type="range" min="0" max={duration || 100} step="0.01" value={endTime}
-              onChange={(e) => {
-                const val = parseFloat(e.target.value);
-                const newEnd = Math.max(val, startTime + 0.1);
-                setEndTime(newEnd);
-                if (videoRef.current) videoRef.current.currentTime = newEnd;
-              }}
-              className="w-full h-2 bg-gray-800 rounded-full appearance-none cursor-pointer accent-blue-500"
-            />
           </div>
-
-          <div className="flex gap-4">
-            <button onClick={onCancel} className="flex-1 py-4 bg-gray-800 hover:bg-gray-750 text-gray-400 font-black text-xs rounded-xl uppercase tracking-widest transition-all">Cancelar</button>
-            <button
-              disabled={!isReady}
-              onClick={() => onSave(startTime, endTime, transform)}
-              className="flex-[2] py-4 bg-pink-600 hover:bg-pink-500 text-white font-black text-xs rounded-xl shadow-lg uppercase tracking-widest transition-all disabled:opacity-50"
-            >
-              Guardar
-            </button>
-          </div>
-        </div>
-      </div>
+        )}
+      </main>
     </div>
   );
 };

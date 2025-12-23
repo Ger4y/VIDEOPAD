@@ -1,9 +1,22 @@
 
 import React, { useRef, useState, useEffect } from 'react';
-import { RecorderProps } from '../types';
 import { Loader2, X, SwitchCamera, Zap, ZapOff } from 'lucide-react';
 
-export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCancel }) => {
+interface GlobalRecorderProps {
+  stream: MediaStream;
+  facingMode: 'user' | 'environment';
+  onSwitchCamera: (mode: 'user' | 'environment') => void;
+  onRecordingComplete: (blob: Blob) => void;
+  onCancel: () => void;
+}
+
+export const Recorder: React.FC<GlobalRecorderProps> = ({ 
+  stream, 
+  facingMode, 
+  onSwitchCamera, 
+  onRecordingComplete, 
+  onCancel 
+}) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -11,48 +24,15 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [screenLight, setScreenLight] = useState(true);
 
   useEffect(() => {
-    let localStream: MediaStream | null = null;
-    const startCamera = async () => {
-      try {
-        const ms = await navigator.mediaDevices.getUserMedia({
-          video: { 
-            facingMode: facingMode,
-            width: { ideal: 720 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 }
-          },
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          }
-        });
-        localStream = ms;
-        setStream(ms);
-        if (videoRef.current) {
-          videoRef.current.srcObject = ms;
-        }
-      } catch (err) {
-        console.error("Camera error:", err);
-        alert("Acceso a cámara denegado.");
-        onCancel();
-      }
-    };
-    startCamera();
-    return () => {
-      if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [facingMode, onCancel]);
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
 
   const handleStartRecording = () => {
-    if (!stream) return;
     setCountdown(3);
     let count = 3;
     const timer = setInterval(() => {
@@ -62,7 +42,6 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
       } else {
         clearInterval(timer);
         setCountdown(null);
-        // Inicio inmediato tras el 1
         startCapture();
       }
     }, 800);
@@ -96,7 +75,7 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
       mediaRecorder.onstop = async () => {
         setIsProcessing(true);
         const blob = new Blob(chunksRef.current, { type: options.mimeType || 'video/webm' });
-        onRecordingComplete(blob, 0);
+        onRecordingComplete(blob);
       };
       mediaRecorder.start();
       setIsRecording(true);
@@ -114,7 +93,7 @@ export const Recorder: React.FC<RecorderProps> = ({ onRecordingComplete, onCance
   };
 
   const toggleCamera = () => {
-    setFacingMode(prev => prev === 'environment' ? 'user' : 'environment');
+    onSwitchCamera(facingMode === 'environment' ? 'user' : 'environment');
   };
 
   const bgClass = screenLight ? 'bg-white' : 'bg-black';
