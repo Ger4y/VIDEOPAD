@@ -8,6 +8,7 @@ interface ClipMetadata {
   endTime: number;
   volume: number;
   filename: string;
+  mimeType: string;
   allowOverlap?: boolean;
   transform?: { scale: number; x: number; y: number; rotation: number };
 }
@@ -23,9 +24,13 @@ export const exportProject = async (projectName: string): Promise<void> => {
   const zip = new JSZip();
   const clips = await getAllClips();
   
+  if (clips.length === 0) {
+    throw new Error("No hay clips para exportar.");
+  }
+
   const metadata: ProjectFile = {
     projectName: projectName || "Untitled Project",
-    version: 3, 
+    version: 4, 
     timestamp: Date.now(),
     clips: [],
   };
@@ -33,7 +38,12 @@ export const exportProject = async (projectName: string): Promise<void> => {
   const videoFolder = zip.folder("video_assets");
 
   for (const clip of clips) {
-    const filename = `pad_${clip.id}.mp4`; 
+    if (!clip || !clip.blob || clip.blob.size === 0) continue;
+
+    const mime = clip.blob.type;
+    const extension = mime.includes('webm') ? 'webm' : 'mp4';
+    const filename = `pad_${clip.id}.${extension}`; 
+    
     if (videoFolder) {
       videoFolder.file(filename, clip.blob);
     }
@@ -44,6 +54,7 @@ export const exportProject = async (projectName: string): Promise<void> => {
       endTime: clip.endTime,
       volume: clip.volume ?? 5.0,
       filename: `video_assets/${filename}`,
+      mimeType: mime,
       allowOverlap: clip.allowOverlap ?? false,
       transform: clip.transform as any
     });
@@ -53,19 +64,23 @@ export const exportProject = async (projectName: string): Promise<void> => {
 
   const content = await zip.generateAsync({ 
     type: "blob",
-    compression: "STORE",
-    mimeType: "application/zip"
+    compression: "STORE"
   });
 
+  const safeName = projectName.trim().replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'proyecto_videopad';
   const url = URL.createObjectURL(content);
   const a = document.createElement('a');
+  a.style.display = 'none';
   a.href = url;
-  const safeName = projectName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-  a.download = `${safeName || 'videopad_project'}.zip`;
+  a.download = `${safeName}.zip`;
+  
   document.body.appendChild(a);
   a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 2000);
 };
 
 export const importProject = async (file: File): Promise<string> => {
@@ -80,7 +95,7 @@ export const importProject = async (file: File): Promise<string> => {
 
   const manifestFile = loadedZip.file("project_manifest.json") || loadedZip.file("project.json");
   if (!manifestFile) {
-    throw new Error("No se encontró el manifiesto del proyecto.");
+    throw new Error("No se encontró el archivo de proyecto.");
   }
 
   const metadataStr = await manifestFile.async("string");
@@ -95,11 +110,9 @@ export const importProject = async (file: File): Promise<string> => {
     const videoFile = loadedZip.file(clipData.filename);
     if (videoFile) {
       const arrayBuffer = await videoFile.async("arraybuffer");
-      // CRITICAL: Forzar video/mp4 incluso si el archivo original era .bin
-      let mimeType = 'video/mp4';
-      if (clipData.filename.toLowerCase().endsWith('.webm')) mimeType = 'video/webm';
-      
+      let mimeType = clipData.mimeType || (clipData.filename.endsWith('.webm') ? 'video/webm' : 'video/mp4');
       const videoBlob = new Blob([arrayBuffer], { type: mimeType }); 
+      
       await saveClip(
         clipData.id, 
         videoBlob, 
