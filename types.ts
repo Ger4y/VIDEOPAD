@@ -2,7 +2,7 @@ export interface PadTransform {
   scale: number;
   x: number;
   y: number;
-  rotation: number; // 0, 90, 180, 270
+  rotation: number;
 }
 
 export interface PadCell {
@@ -17,7 +17,10 @@ export interface PadCell {
   allowOverlap: boolean;
 }
 
-export interface RecorderProps {
-  onRecordingComplete: (blob: Blob, startTime: number, endTime?: number) => void;
+export interface GlobalRecorderProps {
+  stream: MediaStream;
+  facingMode: 'user' | 'environment';
+  onSwitchCamera: (mode: 'user' | 'environment') => void;
+  onRecordingComplete: (blob: Blob) => void;
   onCancel: () => void;
 }
